@@ -1,6 +1,8 @@
 import os
 import sys
 import json
+import io
+import zipfile
 import streamlit as st
 
 # Configuración de página
@@ -21,7 +23,7 @@ from generador_plano_didactico import generar_pdf_plano_didactico
 def cargar_config():
     cfg = {"gemini_api_key": "", "maestro": "Demart Flores Ornelas", "centro": "CENTRO COMUNITARIO ACÉRCATE"}
     
-    # 1. Cargar desde st.secrets (Streamlit Community Cloud)
+    # 1. Cargar desde st.secrets (Streamlit Community Cloud) si existen
     try:
         if "gemini_api_key" in st.secrets:
             cfg["gemini_api_key"] = st.secrets["gemini_api_key"]
@@ -39,7 +41,12 @@ def cargar_config():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
-                cfg.update(loaded)
+                if loaded.get("gemini_api_key"):
+                    cfg["gemini_api_key"] = loaded["gemini_api_key"]
+                if loaded.get("maestro"):
+                    cfg["maestro"] = loaded["maestro"]
+                if loaded.get("centro"):
+                    cfg["centro"] = loaded["centro"]
         except Exception:
             pass
     return cfg
@@ -300,22 +307,13 @@ cfg = cargar_config()
 
 # Barra lateral
 with st.sidebar:
-    st.image("https://raw.githubusercontent.com/google/material-design-icons/master/png/action/school/materialicons/48dp/1x/baseline_school_black_48dp.png", width=48)
-    st.title("Configuración")
-    
-    api_key_input = st.text_input(
-        "🔑 Gemini API Key:",
-        value=cfg.get("gemini_api_key", ""),
-        type="password",
-        help="Clave gratuita de Google AI Studio (https://aistudio.google.com/app/apikey)"
-    )
+    st.title("⚙️ Configuración")
     
     nombre_maestro = st.text_input("👤 Maestro(a):", value=cfg.get("maestro", "Demart Flores Ornelas"))
     nombre_centro = st.text_input("🏢 Centro / Escuela:", value=cfg.get("centro", "CENTRO COMUNITARIO ACÉRCATE"))
     ciclo_escolar_cfg = st.text_input("📅 Ciclo Escolar:", value="2025-2026")
 
     if st.button("💾 Guardar Configuración"):
-        cfg["gemini_api_key"] = api_key_input
         cfg["maestro"] = nombre_maestro
         cfg["centro"] = nombre_centro
         guardar_config(cfg)
@@ -341,7 +339,7 @@ tipo_formato = st.radio(
 
 st.markdown("---")
 
-api_key_actual = api_key_input.strip() or cfg.get("gemini_api_key", "").strip()
+api_key_actual = cfg.get("gemini_api_key", "").strip()
 
 # =========================================================================
 # FORMATO 1: CLASES ESPECIALES Y TALLERES
@@ -498,36 +496,74 @@ if "Clases Especiales" in tipo_formato:
                     generar_pdf_planeacion(resultado_json, pdf_plan_path)
                     generar_pdf_rubricas(resultado_json, pdf_rub_path)
 
-                    st.success("🎉 ¡Documentos generados exitosamente con el formato oficial de Acércate!")
-
                     with open(pdf_plan_path, "rb") as f_plan:
                         bytes_plan = f_plan.read()
                     with open(pdf_rub_path, "rb") as f_rub:
                         bytes_rub = f_rub.read()
 
-                    c_d1, c_d2 = st.columns(2)
-                    with c_d1:
-                        st.download_button(
-                            label="📥 Descargar Planeación Oficial (PDF)",
-                            data=bytes_plan,
-                            file_name=f"Planeacion_{materia_final}_{clean_per}.pdf",
-                            mime="application/pdf",
-                            use_container_width=True
-                        )
-                    with c_d2:
-                        st.download_button(
-                            label="📥 Descargar Rúbricas de Evaluación (PDF)",
-                            data=bytes_rub,
-                            file_name=f"Rubricas_{materia_final}_{clean_per}.pdf",
-                            mime="application/pdf",
-                            use_container_width=True
-                        )
+                    # Empaquetar ambos PDFs en un archivo ZIP descargable con 1 solo clic
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                        zip_file.writestr(f"Planeacion_{materia_final}_{clean_per}.pdf", bytes_plan)
+                        zip_file.writestr(f"Rubricas_{materia_final}_{clean_per}.pdf", bytes_rub)
+                    bytes_zip = zip_buffer.getvalue()
 
-                    with st.expander("👁️ Ver desglose pedagógico generado"):
-                        st.json(resultado_json)
+                    # Guardar en session_state para persistencia total contra recargas
+                    st.session_state["esp_generado"] = True
+                    st.session_state["esp_bytes_plan"] = bytes_plan
+                    st.session_state["esp_bytes_rub"] = bytes_rub
+                    st.session_state["esp_bytes_zip"] = bytes_zip
+                    st.session_state["esp_nom_plan"] = f"Planeacion_{materia_final}_{clean_per}.pdf"
+                    st.session_state["esp_nom_rub"] = f"Rubricas_{materia_final}_{clean_per}.pdf"
+                    st.session_state["esp_nom_zip"] = f"Paquete_Planeacion_y_Rubricas_{materia_final}_{clean_per}.zip"
+                    st.session_state["esp_resultado_json"] = resultado_json
+                    st.rerun()
 
                 except Exception as ex:
                     st.error(f"❌ Ocurrió un error al generar: {str(ex)}")
+
+    # RENDERIZAR RESULTADOS Y BOTONES DE DESCARGA DESDE SESSION_STATE (PERSISTENTE)
+    if st.session_state.get("esp_generado", False):
+        st.markdown("---")
+        st.success("🎉 ¡Documentos generados exitosamente con el formato oficial de Acércate!")
+
+        st.markdown("#### 📥 Elige cómo deseas descargar tus documentos:")
+
+        # Botón 1: Descargar ambos juntos en ZIP (1 solo clic)
+        st.download_button(
+            label="📦 Descargar AMBOS Documentos (ZIP con Planeación + Rúbricas)",
+            data=st.session_state["esp_bytes_zip"],
+            file_name=st.session_state["esp_nom_zip"],
+            mime="application/zip",
+            type="primary",
+            use_container_width=True
+        )
+
+        # Botones individuales lado a lado
+        c_d1, c_d2 = st.columns(2)
+        with c_d1:
+            st.download_button(
+                label="📄 Descargar solo Planeación (PDF)",
+                data=st.session_state["esp_bytes_plan"],
+                file_name=st.session_state["esp_nom_plan"],
+                mime="application/pdf",
+                use_container_width=True
+            )
+        with c_d2:
+            st.download_button(
+                label="📋 Descargar solo Rúbricas (PDF)",
+                data=st.session_state["esp_bytes_rub"],
+                file_name=st.session_state["esp_nom_rub"],
+                mime="application/pdf",
+                use_container_width=True
+            )
+
+        if st.button("🔄 Generar Nueva Planeación (Limpiar / Reiniciar)", key="btn_reset_esp"):
+            st.session_state["esp_generado"] = False
+            st.rerun()
+
+        with st.expander("👁️ Ver desglose pedagógico generado"):
+            st.json(st.session_state["esp_resultado_json"])
 
 # =========================================================================
 # FORMATO 2: PRIMARIA GENERAL (PLANO DIDÁCTICO SEP 2022)
@@ -658,21 +694,34 @@ else:
 
                     generar_pdf_plano_didactico(resultado_plano_json, pdf_plano_path)
 
-                    st.success("🎉 ¡Plano Didáctico oficial generado exitosamente!")
-
                     with open(pdf_plano_path, "rb") as f_plano:
                         bytes_plano = f_plano.read()
 
-                    st.download_button(
-                        label="📥 Descargar Plano Didáctico Oficial (PDF)",
-                        data=bytes_plano,
-                        file_name=f"{clean_nom}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
-
-                    with st.expander("👁️ Ver desglose curricular oficial generado (SEP 2022)"):
-                        st.json(resultado_plano_json)
+                    st.session_state["plano_generado"] = True
+                    st.session_state["plano_bytes"] = bytes_plano
+                    st.session_state["plano_nom"] = f"{clean_nom}.pdf"
+                    st.session_state["plano_resultado_json"] = resultado_plano_json
+                    st.rerun()
 
                 except Exception as ex:
                     st.error(f"❌ Ocurrió un error al generar: {str(ex)}")
+
+    # RENDERIZAR RESULTADOS Y BOTÓN DE DESCARGA DESDE SESSION_STATE (PERSISTENTE)
+    if st.session_state.get("plano_generado", False):
+        st.markdown("---")
+        st.success("🎉 ¡Plano Didáctico oficial generado exitosamente!")
+        st.download_button(
+            label="📥 Descargar Plano Didáctico Oficial (PDF)",
+            data=st.session_state["plano_bytes"],
+            file_name=st.session_state["plano_nom"],
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True
+        )
+
+        if st.button("🔄 Generar Nuevo Plano Didáctico (Limpiar / Reiniciar)", key="btn_reset_plano"):
+            st.session_state["plano_generado"] = False
+            st.rerun()
+
+        with st.expander("👁️ Ver desglose curricular oficial generado (SEP 2022)"):
+            st.json(st.session_state["plano_resultado_json"])
